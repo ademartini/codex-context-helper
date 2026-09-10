@@ -40,7 +40,10 @@ struct PanelRootView: View {
                     .accessibilityIdentifier("panel.back")
                     .help("Back (Escape)")
             }
-            Image(systemName: "gauge.with.dots.needle.33percent").foregroundStyle(.secondary)
+            Image(nsImage: AppBranding.image).resizable().scaledToFit()
+                .frame(width: 18, height: 18)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .accessibilityHidden(true)
             Text(headerTitle)
                 .font(.system(.subheadline, weight: .semibold)).lineLimit(1)
             Spacer(minLength: 0)

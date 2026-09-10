@@ -10,7 +10,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     init(model: PanelViewModel, panel: FloatingPanelController) {
         self.model = model; self.panel = panel
         super.init()
-        statusItem.button?.image = NSImage(systemSymbolName: "gauge.with.dots.needle.50percent", accessibilityDescription: "Codex Context Helper")
+        statusItem.button?.image = AppBranding.menuBarImage
+        statusItem.button?.setAccessibilityLabel("Codex Context Helper")
         statusItem.button?.toolTip = "Codex Context Helper"
         let menu = NSMenu()
         menu.delegate = self

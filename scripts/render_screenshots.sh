@@ -11,7 +11,9 @@ files = sorted(str(p) for p in (root / 'CodexContextHelper').rglob('*.swift') if
 subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-D', 'DEBUG', '-swift-version', '6',
                 '-module-cache-path', str(root / '.build-screenshots/ModuleCache'),
                 *files, str(root / 'scripts/render_screenshots.swift'), '-o', str(root / '.build-screenshots/render')], check=True)
-subprocess.run([str(root / '.build-screenshots/render'), str(root / 'docs/images')], check=True)
+# Separate processes avoid AppKit image-cache reuse when tearing down offscreen windows.
+for name in ['compact', 'agents', 'history']:
+    subprocess.run([str(root / '.build-screenshots/render'), str(root / 'docs/images'), name], check=True)
 subprocess.run(['python3', str(root / 'scripts/strip_png_metadata.py'),
                 *[str(root / 'docs/images' / (name + '.png')) for name in ['compact', 'agents', 'history']]], check=True)
 PY

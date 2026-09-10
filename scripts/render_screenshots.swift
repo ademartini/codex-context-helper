@@ -14,12 +14,14 @@ private final class DemoSettings: SettingsStoring {
 @main
 struct ScreenshotRenderer {
     @MainActor static func main() throws {
-        guard CommandLine.arguments.count == 2 else { fatalError("Provide an output directory") }
+        guard CommandLine.arguments.count == 3, ["compact", "agents", "history"].contains(CommandLine.arguments[2]) else { fatalError("Provide an output directory and page name") }
         let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         app.appearance = NSAppearance(named: .darkAqua)
+        guard let logo = NSImage(contentsOf: output.appendingPathComponent("logo.png")) else { fatalError("Missing demo logo") }
+        logo.setName("BrandMark")
         let model = PanelViewModel(settingsStore: DemoSettings())
         let now = ISO8601DateFormatter().date(from: "2026-09-10T16:00:00Z")!
         model.now = now
@@ -50,34 +52,50 @@ struct ScreenshotRenderer {
             DailyTokenUsage(day: "2026-09-08", tokens: 780_000), DailyTokenUsage(day: "2026-09-09", tokens: 610_000),
             DailyTokenUsage(day: "2026-09-10", tokens: 920_000)
         ], source))
-        for name in ["compact", "agents", "history"] {
-            model.back()
-            if name == "agents" { model.openAgents() }
-            if name == "history" { model.openHistory() }
-            let host = NSHostingView(rootView: PanelRootView(model: model).environment(\.colorScheme, .dark))
-            host.sizingOptions = []
-            host.frame = NSRect(x: 0, y: 0, width: 300, height: 380)
-            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
-            window.isOpaque = false; window.backgroundColor = .clear
-            window.contentView = host
-            window.setContentSize(NSSize(width: 300, height: 380))
-            host.frame = NSRect(x: 0, y: 0, width: 300, height: 380)
-            host.layoutSubtreeIfNeeded()
-            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 600, pixelsHigh: 760,
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("No bitmap") }
-            bitmap.size = host.bounds.size
-            host.cacheDisplay(in: host.bounds, to: bitmap)
-            // Export pixels only: AppKit's PNG representation can add EXIF metadata.
-            let url = output.appendingPathComponent(name + ".png")
-            guard let pixels = bitmap.cgImage,
-                  let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { fatalError("No PNG destination") }
-            CGImageDestinationAddImage(destination, pixels, nil)
-            guard CGImageDestinationFinalize(destination) else { fatalError("PNG export failed") }
-            window.close()
+        let name = CommandLine.arguments[2]
+        model.back()
+        if name == "agents" { model.openAgents() }
+        if name == "history" { model.openHistory() }
+        let host = NSHostingView(rootView: PanelRootView(model: model).environment(\.colorScheme, .dark)
+            .environment(\.displayScale, 3)
+            .frame(width: 300, height: 380)
+            .scaleEffect(3)
+            .frame(width: 900, height: 1140))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 1140)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false; window.backgroundColor = .clear
+        window.contentView = host
+        window.setContentSize(NSSize(width: 900, height: 1140))
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 1140)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        // SwiftUI caches text in sublayers at 1x in an offscreen window.
+        // Redraw those layers at the export scale; a larger bitmap alone is blurry.
+        func renderAtExportScale(_ layer: CALayer) {
+            // Already-backed images use their intrinsic resolution and must not be invalidated.
+            if layer.contents == nil && layer.contentsScale < 3 {
+                layer.contentsScale = 3
+                layer.rasterizationScale = 3
+                layer.setNeedsDisplay()
+                layer.displayIfNeeded()
+            }
+            layer.sublayers?.forEach(renderAtExportScale)
         }
-        print("Rendered three native views using synthetic demo data.")
+        if let layer = host.layer { renderAtExportScale(layer) }
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 900, pixelsHigh: 1140,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("No bitmap") }
+        bitmap.size = host.bounds.size
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        // Export pixels only: AppKit's PNG representation can add EXIF metadata.
+        let url = output.appendingPathComponent(name + ".png")
+        guard let pixels = bitmap.cgImage,
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { fatalError("No PNG destination") }
+        CGImageDestinationAddImage(destination, pixels, nil)
+        guard CGImageDestinationFinalize(destination) else { fatalError("PNG export failed") }
+        window.close()
+        print("Rendered native view using synthetic demo data.")
     }
 }
