@@ -1,0 +1,33 @@
+{
+  "data": [
+    {
+      "id": "root",
+      "name": "Fixture task",
+      "updatedAt": 1788990000,
+      "recencyAt": 1788990050,
+      "model": "fixture-model",
+      "status": {
+        "type": "active"
+      },
+      "path": "/tmp/fixture-root.jsonl",
+      "parentThreadId": null,
+      "preview": "PRIVATE_PROMPT_SENTINEL",
+      "turns": [
+        {
+          "text": "PRIVATE_TOOL_SENTINEL"
+        }
+      ]
+    },
+    {
+      "id": "child",
+      "name": null,
+      "updatedAt": 1788990001,
+      "status": {
+        "type": "notLoaded"
+      },
+      "parentThreadId": "root",
+      "preview": "NEVER_USE_PREVIEW"
+    }
+  ],
+  "nextCursor": "fixture-next"
+}

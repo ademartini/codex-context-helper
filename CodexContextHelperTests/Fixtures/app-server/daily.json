@@ -1,0 +1,20 @@
+{
+  "summary": {
+    "lifetimeTokens": null,
+    "currentStreakDays": null
+  },
+  "dailyUsageBuckets": [
+    {
+      "startDate": "2026-09-07",
+      "tokens": 10
+    },
+    {
+      "startDate": "2026-09-08",
+      "tokens": 20
+    },
+    {
+      "startDate": "2026-09-09",
+      "tokens": 30
+    }
+  ]
+}

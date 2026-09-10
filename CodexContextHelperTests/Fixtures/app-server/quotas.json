@@ -1,0 +1,31 @@
+{
+  "accountId": "PRIVATE_ACCOUNT_SENTINEL",
+  "rateLimits": {
+    "primary": {
+      "usedPercent": 99
+    }
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitName": "Codex",
+      "primary": {
+        "usedPercent": 23,
+        "windowDurationMins": 300,
+        "resetsAt": 1788990060
+      },
+      "secondary": {
+        "usedPercent": 47,
+        "windowDurationMins": 10080,
+        "resetsAt": null
+      }
+    },
+    "other": {
+      "limitName": "Other model",
+      "primary": {
+        "usedPercent": 0,
+        "windowDurationMins": 60,
+        "resetsAt": 1788990090
+      }
+    }
+  }
+}

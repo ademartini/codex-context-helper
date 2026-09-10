@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-10T12:00:00Z","type":"session_meta","payload":{"id":"fixture-root","cli_version":"0.153.4","base_instructions":"PRIVATE_PROMPT_SENTINEL"}}
+{"timestamp":"2026-09-10T12:00:01Z","type":"turn_context","payload":{"model":"fixture-model"}}
+{"timestamp":"2026-09-10T12:00:02Z","type":"response_item","payload":{"type":"message","content":"PRIVATE_TOOL_OUTPUT_SENTINEL"}}
+{"timestamp":"2026-09-10T12:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":150,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":250},"total_token_usage":{"input_tokens":8000,"cached_input_tokens":6000,"output_tokens":2000,"reasoning_output_tokens":300,"total_tokens":10000},"model_context_window":1000}}}

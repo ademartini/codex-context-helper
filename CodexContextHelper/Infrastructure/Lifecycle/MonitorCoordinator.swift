@@ -1,0 +1,396 @@
+import AppKit
+
+/// Owns the single backend and independent, bounded refresh lanes. All presentation writes stay on MainActor.
+@MainActor
+final class MonitorCoordinator {
+    typealias BackendFactory = @Sendable (ApprovedExecutable) async throws -> any MonitorBackend
+    private let model: PanelViewModel
+    private let contexts: ContextSnapshotRepository
+    private let usage = TaskUsageRepository()
+    private let factory: BackendFactory
+    private let evidence: @MainActor () -> AccessibilityEvidence
+    private var backend: (any MonitorBackend)?
+    private var loop: Task<Void, Never>?
+    private var connecting: Task<Void, Never>?
+    private var catalogTask: Task<Void, Never>?
+    private var accountTask: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
+    private var contextTask: Task<Void, Never>?
+    private var costTask: Task<Void, Never>?
+    private var lineageTask: Task<Void, Never>?
+    private var generation = 0
+    private var stopped = false
+    private var restartRequested = false
+    private var backoff = ReconnectBackoff()
+    private var nextConnect = Date.distantPast
+    private var nextCatalog = Date.distantPast
+    private var nextAccount = Date.distantPast
+    private var nextCost = Date.distantPast
+    private var nextSelection = Date.distantPast
+    private var nextContext = Date.distantPast
+    private var nextLineage = Date.distantPast
+    private var lastEvidence: AccessibilityEvidence?
+    private var recentIDs: [String] = []
+    private var selectionRevision = 0
+    private var lineageRoot: String?
+    private var lineage = ThreadLineage(tasks: [], exhaustive: false)
+    private var descendantContexts: [String: Metric<ContextSnapshot>] = [:]
+    private var costs: [String: Metric<TaskCostEstimate>] = [:]
+
+    init(model: PanelViewModel, contexts: ContextSnapshotRepository = ContextSnapshotRepository(),
+         factory: @escaping BackendFactory = { try await LocalMonitorBackend(approved: $0) },
+         evidence: (@MainActor () -> AccessibilityEvidence)? = nil) {
+        self.model = model; self.contexts = contexts; self.factory = factory
+        let client = CodexAccessibilityClient(permission: model.permission)
+        self.evidence = evidence ?? { client.selectionEvidence() }
+    }
+
+    func start() {
+        guard loop == nil else { return }
+        stopped = false
+        loop = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.poll()
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            }
+        }
+    }
+    func refresh() {
+        nextCatalog = .distantPast; nextAccount = .distantPast; nextCost = .distantPast
+        nextSelection = .distantPast; nextContext = .distantPast; nextLineage = .distantPast
+        lastEvidence = nil
+    }
+    func preferencesChanged() { refresh(); if !model.tracksAgents { clearLineage() } }
+    func agentPageChanged() {
+        if lineageRoot != model.agentRootTask?.id { clearLineage(); nextLineage = .distantPast }
+    }
+    func taskTrackingChanged() {
+        selectionRevision += 1
+        selectionTask?.cancel(); selectionTask = nil
+        lastEvidence = nil; nextSelection = .distantPast; nextContext = .distantPast; nextCost = .distantPast
+        agentPageChanged()
+    }
+    func executableApproved() {
+        restartRequested = true; nextConnect = .distantPast; backoff.reset()
+        model.connectionIssue = .connecting
+    }
+
+    /// A single poll owns connect/disconnect ordering; refresh work cannot create another process.
+    func poll(now: Date = Date()) async {
+        guard !stopped else { return }
+        if model.panelVisible { model.now = now }
+        if connecting != nil { return }
+        if let backend {
+            let healthy = await backend.isConnected()
+            if restartRequested || !healthy {
+                guard restartRequested || now >= nextConnect else { return }
+                guard await disconnect() else { nextConnect = now.addingTimeInterval(30); return }
+                if restartRequested { nextConnect = .distantPast }
+                restartRequested = false
+            }
+        }
+        guard !stopped else { return }
+        guard let backend else {
+            guard now >= nextConnect, model.connectionIssue != .executableChanged else { return }
+            connect(now: now); return
+        }
+        if now >= nextCatalog { refreshCatalog(backend, now: now) }
+        if now >= nextAccount, model.panelVisible || nextAccount == .distantPast { refreshAccount(backend, now: now) }
+        if now >= nextSelection { resolveSelection(backend, now: now) }
+        if now >= nextContext { refreshContexts(now: now) }
+        if now >= nextCost, model.panelVisible, model.connectionIssue != .signedOut { refreshCosts(backend, now: now) }
+        if now >= nextLineage, model.tracksAgents { refreshLineage(backend, now: now) }
+    }
+
+    private func connect(now: Date) {
+        guard connecting == nil, backend == nil else { return }
+        guard let approved = model.settings.approvedExecutable else { model.connectionIssue = .unapprovedExecutable; return }
+        restartRequested = false
+        model.connectionIssue = .connecting
+        connecting = Task {
+            defer { connecting = nil }
+            do {
+                let created = try await factory(approved)
+                backend = created
+                guard !stopped else { _ = await created.close(); return }
+                try await created.start()
+                guard !stopped else { _ = await created.close(); return }
+                backoff.reset(); nextConnect = .distantPast; refresh()
+                model.connectionIssue = nil
+            } catch {
+                if let backend, await backend.close() { self.backend = nil }
+                let executableError = error as? ExecutableError
+                model.connectionIssue = executableError == nil ? .disconnected : .executableChanged
+                nextConnect = Date().addingTimeInterval(backoff.failed())
+            }
+        }
+    }
+
+    @discardableResult
+    private func disconnect() async -> Bool {
+        generation += 1
+        cancelRefreshes()
+        await usage.invalidate()
+        await contexts.stop()
+        model.tasks = model.tasks.map { var row = $0; row.context = row.context.markedStale(); row.cost = row.cost.markedStale(); return row }
+        model.account.quotas = model.account.quotas.markedStale()
+        model.account.dailyTokens = model.account.dailyTokens.markedStale()
+        costs = costs.mapValues { $0.markedStale() }
+        descendantContexts = descendantContexts.mapValues { $0.markedStale() }
+        updateRollup()
+        model.connectionIssue = .disconnected
+        guard let backend else { return true }
+        guard await backend.close() else { return false }
+        self.backend = nil
+        nextConnect = Date().addingTimeInterval(backoff.failed())
+        return true
+    }
+    func stop() async -> Bool {
+        stopped = true; loop?.cancel(); loop = nil
+        await connecting?.value
+        return await disconnect()
+    }
+    private func cancelRefreshes() {
+        selectionRevision += 1
+        catalogTask?.cancel(); catalogTask = nil; accountTask?.cancel(); accountTask = nil
+        selectionTask?.cancel(); selectionTask = nil; contextTask?.cancel(); contextTask = nil
+        costTask?.cancel(); costTask = nil; lineageTask?.cancel(); lineageTask = nil
+    }
+
+    private func refreshCatalog(_ backend: any MonitorBackend, now: Date) {
+        guard catalogTask == nil else { return }
+        nextCatalog = now.addingTimeInterval(5)
+        let current = generation
+        catalogTask = Task {
+            defer { if current == generation { catalogTask = nil } }
+            do {
+                let tasks = try await backend.recentTasks(count: model.settings.recentTaskCount)
+                guard current == generation, !Task.isCancelled else { return }
+                recentIDs = tasks.map(\.id)
+                let previous = Dictionary(model.tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let activityChanged = tasks.contains { previous[$0.id]?.task.updatedAt != $0.updatedAt }
+                model.tasks = tasks.map { task in
+                    var row = previous[task.id] ?? TaskSnapshot(task: task)
+                    row.task = task; return row
+                }
+                if let selectedID = model.selection.threadID, !recentIDs.contains(selectedID), let selected = previous[selectedID] { model.tasks.append(selected) }
+                if case .pinned(let id) = model.trackingMode, !recentIDs.contains(id),
+                   let pinned = try? await backend.selectedTask(id: id), pinned.id == id,
+                   current == generation, model.trackingMode == .pinned(id), !Task.isCancelled,
+                   let index = model.tasks.firstIndex(where: { $0.id == id }) {
+                    model.tasks[index].task = pinned
+                }
+                guard current == generation, !Task.isCancelled else { return }
+                lastEvidence = nil; nextSelection = .distantPast
+                await configureWatchers()
+                if activityChanged { nextCost = .distantPast }
+            } catch {
+                guard current == generation else { return }
+                model.connectionIssue = (error as? AppServerError)?.unavailableReason ?? .disconnected
+            }
+        }
+    }
+    private func refreshAccount(_ backend: any MonitorBackend, now: Date) {
+        guard accountTask == nil else { return }
+        nextAccount = now.addingTimeInterval(30)
+        let current = generation
+        accountTask = Task {
+            defer { if current == generation { accountTask = nil } }
+            let snapshot = await backend.accountUsage()
+            guard current == generation, !Task.isCancelled else { return }
+            // Signed-out status is explicit even when earlier estimates remain in the task cache.
+            if snapshot.quotas.unavailableReason == .signedOut || snapshot.dailyTokens.unavailableReason == .signedOut {
+                model.account = snapshot; model.connectionIssue = .signedOut
+                model.tasks = model.tasks.map { var row = $0; row.cost = row.cost.markedStale(); return row }
+                await usage.invalidate()
+            } else {
+                model.account.quotas = preservingFailed(snapshot.quotas, previous: model.account.quotas)
+                model.account.dailyTokens = preservingFailed(snapshot.dailyTokens, previous: model.account.dailyTokens)
+                model.connectionIssue = snapshot.quotas.value != nil || snapshot.dailyTokens.value != nil ? nil : snapshot.quotas.unavailableReason
+            }
+        }
+    }
+    private func preservingFailed<Value>(_ next: Metric<Value>, previous: Metric<Value>) -> Metric<Value> {
+        next.value == nil && previous.value != nil ? previous.markedStale() : next
+    }
+
+    private func resolveSelection(_ backend: any MonitorBackend, now: Date) {
+        guard selectionTask == nil else { return }
+        nextSelection = now.addingTimeInterval(2)
+        let mode = model.trackingMode
+        let revision = selectionRevision
+        if mode != .codex {
+            let oldID = model.selection.threadID
+            if case .pinned(let id) = mode {
+                let next = TaskSelection(threadID: id, provenance: .pinned)
+                if model.selection != next { model.selection = next }
+            } else {
+                let recent = model.tasks.filter { recentIDs.contains($0.id) }
+                if recent != model.tasks { model.tasks = recent }
+                model.selectLatest()
+            }
+            if oldID != model.selection.threadID {
+                if !model.showsAgents { clearLineage(); nextLineage = .distantPast }
+                nextCost = .distantPast
+            }
+            selectionTask = Task {
+                await configureWatchers()
+                if revision == selectionRevision { selectionTask = nil }
+            }
+            return
+        }
+        let observed = evidence()
+        guard observed != lastEvidence else { return }
+        lastEvidence = observed
+        let current = generation
+        selectionTask = Task {
+            defer { if current == generation, revision == selectionRevision { selectionTask = nil } }
+            var resolved: TaskSummary?
+            var checked = observed
+            if case .selected(let ids, let titles) = observed {
+                do {
+                    if ids.count == 1, let id = ids.first {
+                        let candidate = try await backend.selectedTask(id: id)
+                        if titles.isEmpty || titles == [candidate.title] { resolved = candidate }
+                    } else if ids.isEmpty, titles.count == 1, let title = titles.first {
+                        let matches = try await backend.matchingTitle(title)
+                        if matches.exhaustive, matches.tasks.count == 1 { resolved = matches.tasks[0] }
+                    }
+                } catch { checked = .unavailable(.disconnected) }
+                if resolved == nil, case .selected = checked { checked = .unavailable(.ambiguousSelection) }
+            }
+            guard current == generation, model.trackingMode == mode, !Task.isCancelled else { return }
+            let oldID = model.selection.threadID
+            model.tasks.removeAll { !recentIDs.contains($0.id) && $0.id != resolved?.id }
+            if let resolved {
+                if let index = model.tasks.firstIndex(where: { $0.id == resolved.id }) { model.tasks[index].task = resolved }
+                else { model.tasks.append(TaskSnapshot(task: resolved)) }
+                model.selection = TaskSelection(threadID: resolved.id, provenance: .exact)
+            } else {
+                model.selection = TaskSelectionResolver.resolve(tasks: model.tasks.map(\.task), evidence: checked)
+            }
+            if oldID != model.selection.threadID {
+                if !model.showsAgents { clearLineage(); nextLineage = .distantPast }
+                nextCost = .distantPast
+            }
+            await configureWatchers()
+        }
+    }
+
+    private func configureWatchers() async {
+        var watched = model.recentTasks.map(\.task)
+        if let selected = model.selectedTask?.task, !watched.contains(where: { $0.id == selected.id }) {
+            if watched.count == 10 { watched.removeLast() }
+            watched.append(selected)
+        }
+        let current = generation
+        await contexts.configure(tasks: watched) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, current == self.generation else { return }
+                self.nextContext = .distantPast
+                self.nextCost = min(self.nextCost, Date().addingTimeInterval(2))
+                self.nextLineage = min(self.nextLineage, Date().addingTimeInterval(2))
+                self.refreshContexts(now: Date())
+            }
+        }
+        nextContext = .distantPast
+    }
+    private func refreshContexts(now: Date) {
+        guard contextTask == nil else { return }
+        nextContext = now.addingTimeInterval(5)
+        let current = generation
+        contextTask = Task {
+            defer { if current == generation { contextTask = nil } }
+            var pending: Set<String>?
+            repeat {
+                let results = await contexts.refresh(ids: pending)
+                guard current == generation, !Task.isCancelled else { return }
+                for (id, result) in results {
+                    guard let index = model.tasks.firstIndex(where: { $0.id == id }) else { continue }
+                    model.tasks[index].context = result.context
+                    if let name = result.model { model.tasks[index].task.model = name }
+                    model.tasks[index].task.agentName = result.agentName
+                }
+                updateRollup()
+                pending = Set(results.filter { $0.value.moreData }.keys)
+                if !pending!.isEmpty { try? await Task.sleep(for: .milliseconds(25)) }
+            } while !pending!.isEmpty && !Task.isCancelled
+        }
+    }
+    private func refreshCosts(_ backend: any MonitorBackend, now: Date) {
+        guard costTask == nil else { return }
+        nextCost = now.addingTimeInterval(30)
+        let current = generation
+        let ids = model.tasks.map(\.id) + (model.settings.includeSubagents ? lineage.tasks.map(\.id) : [])
+        costTask = Task {
+            defer { if current == generation { costTask = nil } }
+            let values = await usage.refresh(ids: ids, using: backend) { [weak self] id, value in
+                Task { @MainActor in
+                    guard let self, current == self.generation else { return }
+                    let displayed = self.model.connectionIssue == .signedOut ? value.markedStale() : value
+                    self.costs[id] = displayed
+                    if let index = self.model.tasks.firstIndex(where: { $0.id == id }) { self.model.tasks[index].cost = displayed }
+                    self.updateRollup()
+                }
+            }
+            guard current == generation, !Task.isCancelled else { return }
+            costs = model.connectionIssue == .signedOut ? values.mapValues { $0.markedStale() } : values
+            updateRollup()
+        }
+    }
+    private func refreshLineage(_ backend: any MonitorBackend, now: Date) {
+        guard lineageTask == nil, let root = model.agentRootTask else { return }
+        nextLineage = now.addingTimeInterval(30)
+        let current = generation
+        lineageTask = Task {
+            defer { if current == generation { lineageTask = nil } }
+            let found = (try? await backend.descendants(rootID: root.id)) ?? ThreadLineage(tasks: [], exhaustive: false)
+            guard current == generation, model.tracksAgents, model.agentRootTask?.id == root.id, !Task.isCancelled else { return }
+            let previous = Dictionary(lineage.tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            lineageRoot = root.id; lineage = found
+            lineage.tasks = found.tasks.map { task in
+                var task = task
+                task.agentName = task.agentName ?? previous[task.id]?.agentName
+                task.model = task.model ?? previous[task.id]?.model
+                return task
+            }
+            descendantContexts = descendantContexts.filter { key, _ in found.tasks.contains { $0.id == key } }
+            updateRollup(); nextCost = .distantPast
+            for task in found.tasks where !model.tasks.contains(where: { $0.id == task.id }) {
+                let result = await contexts.readDescendant(task)
+                guard current == generation, model.tracksAgents, model.agentRootTask?.id == root.id, !Task.isCancelled else { return }
+                descendantContexts[task.id] = result.context
+                if let index = lineage.tasks.firstIndex(where: { $0.id == task.id }) {
+                    if let name = result.model { lineage.tasks[index].model = name }
+                    lineage.tasks[index].agentName = result.agentName
+                }
+                updateRollup()
+            }
+        }
+    }
+    private func clearLineage() {
+        lineageTask?.cancel(); lineageTask = nil; lineageRoot = nil
+        lineage = ThreadLineage(tasks: [], exhaustive: false); descendantContexts = [:]; model.rollup = nil
+        model.agentDiscovery = nil
+    }
+    private func updateRollup() {
+        guard model.tracksAgents, let root = model.agentRootTask, lineageRoot == root.id else { model.rollup = nil; return }
+        var values = descendantContexts
+        for task in model.tasks { values[task.id] = task.context }
+        let agentTasks = lineage.tasks.filter { $0.id != root.id }.sorted {
+            $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt
+        }.map { task in
+            var task = task
+            if let watched = model.tasks.first(where: { $0.id == task.id }) {
+                task.model = watched.task.model ?? task.model
+                task.agentName = watched.task.agentName ?? task.agentName
+            }
+            return TaskSnapshot(task: task, context: values[task.id] ?? .unavailable(.noData), cost: costs[task.id] ?? .unavailable(.noData))
+        }
+        let discovery = AgentDiscoverySnapshot(rootID: root.id, tasks: agentTasks, exhaustive: lineage.exhaustive)
+        if model.agentDiscovery != discovery { model.agentDiscovery = discovery }
+        guard model.settings.includeSubagents else { model.rollup = nil; return }
+        model.rollup = ThreadLineageResolver.rollup(root: root, lineage: lineage, contexts: values, costs: costs,
+                                                  costIsThreadLocal: ThreadLineageResolver.costIsThreadLocal)
+    }
+}

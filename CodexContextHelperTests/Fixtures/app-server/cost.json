@@ -1,0 +1,21 @@
+{
+  "summary": {},
+  "threadUsage": {
+    "threadId": "root",
+    "estimatedUsageCreditsMicros": 9007199254740993,
+    "estimatedUsageUsdMicros": null,
+    "groups": [
+      {
+        "model": "model-a",
+        "reasoningEffort": "high",
+        "speed": "fast",
+        "estimatedUsageCreditsMicros": 9007199254740993,
+        "inputTokens": 100,
+        "cachedInputTokens": null,
+        "outputTokens": 20,
+        "totalTokens": 120,
+        "tokenType": null
+      }
+    ]
+  }
+}

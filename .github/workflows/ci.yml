@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check source privacy
+        run: python3 scripts/check_public_source.py
+      - name: Check installed tools
+        run: scripts/check_prerequisites.sh
+      - name: Native unit tests
+        run: scripts/test_unit.sh
+      - name: Python tooling tests
+        run: python3 -m unittest discover -s scripts/tests
+      - name: Package local development build
+        run: scripts/package.sh
