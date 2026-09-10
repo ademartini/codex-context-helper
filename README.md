@@ -4,6 +4,8 @@
 
 A small floating macOS companion for Codex. Keep an eye on context remaining, saved token usage, agents, and account limits without leaving your task.
 
+**Why this exists:** I wanted an always-visible overview of context, tokens, agents, and account limits while working in Codex. I couldn't find a built-in view that put all of that together at a glance, so I made this little companion.
+
 **Experimental · macOS 14+ · Swift 6 · MIT licensed**
 
 This is an independent community project, not an OpenAI product and not affiliated with or endorsed by OpenAI. It is provided **as is, without warranty**. Readings may be incomplete, delayed or incorrect, and Codex updates can break compatibility. Do not rely on it for billing, critical decisions, or preventing context loss. Support and continued maintenance are not guaranteed.
