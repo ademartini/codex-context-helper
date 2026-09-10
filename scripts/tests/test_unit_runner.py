@@ -38,6 +38,7 @@ class UnitRunnerTests(unittest.TestCase):
         result = self.run_runner()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('No passing unit-test execution', result.stdout + result.stderr)
+        self.assertIn('TEST_DIAGNOSTIC', result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

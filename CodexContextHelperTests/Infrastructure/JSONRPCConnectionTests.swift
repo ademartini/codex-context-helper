@@ -134,8 +134,9 @@ final class JSONRPCConnectionTests: XCTestCase, @unchecked Sendable {
     }
 
     func testChildExitResumesPendingRequest() async throws {
-        let child = process(handshake + "\nsys.stdin.readline()\nsys.exit(0)\n")
-        let connection = JSONRPCConnection(process: child, requestTimeout: .seconds(2))
+        // Model a cold interpreter launch on a shared CI runner before the handshake.
+        let child = process("import time\ntime.sleep(3)\n" + handshake + "\nsys.stdin.readline()\nsys.exit(0)\n")
+        let connection = JSONRPCConnection(process: child)
         try await connection.start()
         let error = await requestError(connection, method: "account/usage/read")
         XCTAssertEqual(error, .disconnected)

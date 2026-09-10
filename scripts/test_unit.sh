@@ -28,6 +28,7 @@ run_logged "$build_dir/unit-tests.log" env -i PATH=/usr/bin:/bin \
   DYLD_FRAMEWORK_PATH="${developer_dir%/Developer}/SharedFrameworks" \
   "$xctest_path" "$app_path/Contents/PlugIns/CodexContextHelperTests.xctest"
 if ! /usr/bin/grep -Eq 'Executed [1-9][0-9]* tests?, with 0 failures' "$build_dir/unit-tests.log"; then
+  cat "$build_dir/unit-tests.log" >&2
   echo "No passing unit-test execution found. Inspect $build_dir/unit-tests.log" >&2
   exit 1
 fi
