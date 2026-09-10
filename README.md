@@ -8,6 +8,8 @@ A small floating macOS companion for Codex. Keep an eye on context remaining, sa
 
 This is an independent community project, not an OpenAI product and not affiliated with or endorsed by OpenAI. It is provided **as is, without warranty**. Readings may be incomplete, delayed or incorrect, and Codex updates can break compatibility. Do not rely on it for billing, critical decisions, or preventing context loss. Support and continued maintenance are not guaranteed.
 
+> **A note from the human:** This is 100% vibe coded. I have not read any of the code. I did, however, have extremely specific opinions about the rounded corners.
+
 ## A compact view of your work
 
 <p align="center">
