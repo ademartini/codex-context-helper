@@ -9,6 +9,7 @@ struct ThreadLineage: Equatable, Sendable {
 actor AppServerRepository {
     private let connection: any AppServerRequesting
     private let maximumKnownTasks: Int
+    private var descendantFilterRejected = false
 
     init(connection: any AppServerRequesting, maximumKnownTasks: Int = 200) {
         self.connection = connection
@@ -107,6 +108,8 @@ actor AppServerRepository {
     }
 
     private func catalog(archived: Bool, count: Int, ancestorID: String? = nil, title: String? = nil) async throws -> ThreadLineage {
+        // Parameter rejection applies only to descendant discovery, never ordinary task listing.
+        if ancestorID != nil, descendantFilterRejected { return ThreadLineage(tasks: [], exhaustive: false) }
         var known: [String: TaskSummary] = [:]
         var cursor: String?
         var cursors = Set<String>()
@@ -125,7 +128,10 @@ actor AppServerRepository {
                 let response = try await connection.request(method: "thread/list", params: .object(params))
                 page = try CodexProtocol.threadPage(response)
             } catch {
-                if ancestorID != nil { return ThreadLineage(tasks: Array(known.values), exhaustive: false) }
+                if ancestorID != nil {
+                    if error as? AppServerError == .rejectedParameters { descendantFilterRejected = true }
+                    return ThreadLineage(tasks: Array(known.values), exhaustive: false)
+                }
                 throw error
             }
             var droppedRows = false

@@ -32,13 +32,16 @@ struct ExactCounterDetailView: View {
             MonitorCard(title: "Current context") {
                 if let snapshot = task.context.value {
                     MetricLine(label: "Estimated remaining", value: "\(snapshot.estimatedRemainingPercentage)%")
-                    Text("Uses Codex 0.153.4’s calculation: the latest saved context total, a 12,000-token baseline, and whole-percent rounding. This estimates user-controllable context; it is not an exact measure of every token in memory. Live comparison with Codex remains pending.")
+                    Text("Uses a source-derived calculation: the latest saved context total, a 12,000-token baseline, and whole-percent rounding. This estimates user-controllable context; it is not an exact measure of every token in memory. Codex versions may change this calculation; matching saved fields does not establish live parity.")
                         .font(.caption).foregroundStyle(.secondary)
                     MetricLine(label: "Reported model window", value: snapshot.modelContextWindow.formatted() + " tokens")
                 } else {
                     Text(task.context.unavailableReason?.label ?? "Unavailable").foregroundStyle(.secondary)
                 }
                 Text("Session log · \(model.freshness(task.context))").font(.caption).foregroundStyle(.secondary)
+                if let versions = task.context.provenance?.producerVersions, !versions.isEmpty {
+                    Text("Recorded by Codex \(versions.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
+                }
                 if let timestamp = task.context.provenance?.counterAt {
                     Text("Last saved response: \(timestamp.formatted(date: .abbreviated, time: .standard))")
                         .font(.caption).foregroundStyle(.secondary)

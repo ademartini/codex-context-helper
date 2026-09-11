@@ -41,42 +41,47 @@ struct MetricLine: View {
     }
 }
 
-struct MonitorRecoveryView: View {
+struct LocalActivityEmptyView: View {
     @ObservedObject var model: PanelViewModel
-    var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.localDiscoveryIssue == .connecting { ProgressView().controlSize(.small) }
+            Text(model.localEmptyTitle).font(.headline)
+            Text(model.localEmptyExplanation).font(.caption).foregroundStyle(.secondary)
+            if model.localDiscoveryIssue != .connecting {
+                HStack {
+                    if model.localDiscoveryIssue == .permissionDenied {
+                        Button("Open session folder", action: model.revealSessionFolder)
+                            .accessibilityIdentifier("local.openFolder")
+                    } else if model.localDiscoveryIssue == .noData || model.localDiscoveryIssue == nil {
+                        Button("Open Codex", action: model.openCodex)
+                    }
+                    Button("Retry", action: model.refresh).accessibilityIdentifier("local.retry")
+                }.controlSize(.small)
+            }
+        }.accessibilityIdentifier("panel.state")
+    }
+}
+
+struct AccountConnectionView: View {
+    @ObservedObject var model: PanelViewModel
     var body: some View {
         if let issue = model.connectionIssue {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    if issue == .connecting { ProgressView().controlSize(.mini) }
-                    else { Image(systemName: "exclamationmark.circle") }
-                    Text(issue.label).font(.caption).fontWeight(.medium)
-                    Spacer(minLength: 0)
-                    if issue == .signedOut {
-                        Button("Open Codex", action: model.openCodex)
-                    } else if issue != .connecting {
-                        Button("Settings", action: model.openSettings)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(model.accountConnectionLabel).font(.caption2).foregroundStyle(.secondary)
+                if issue == .unapprovedExecutable {
+                    Button("Connect limits & history", action: model.openAccountSettings)
+                        .accessibilityIdentifier("account.connect")
+                } else if issue == .executableChanged {
+                    Button("Review update", action: model.openAccountSettings)
+                        .accessibilityIdentifier("account.reviewUpdate")
+                } else if issue != .connecting {
+                    HStack {
+                        Button("Retry", action: model.retryAccountUsage).accessibilityIdentifier("account.retry")
+                        Button("Settings", action: model.openAccountSettings)
                     }
                 }
-                if expanded {
-                    Text(explanation(issue)).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("panel.state")
-        } else if expanded, case .inferred = model.selection.provenance {
-            Text(model.accessibilityGranted ? "Following recent activity; Codex has not exposed a unique selected task." : "Following recent activity. Enable Accessibility in Settings to help identify the selected task.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-    private func explanation(_ issue: UnavailableReason) -> String {
-        switch issue {
-        case .signedOut: "Sign in to the local Codex app to restore account data."
-        case .unapprovedExecutable, .executableChanged: "Choose and approve the installed Codex executable in Settings."
-        case .permissionDenied: "Accessibility is optional. Recent activity remains available as the selection fallback."
-        case .connecting: "Waiting for the local Codex app-server."
-        case .disconnected: "The local connection was interrupted. Cached values retain their last check time while the monitor reconnects."
-        case .unsupportedSchema, .invalidCounters: "This data does not match the supported format. Values remain unavailable until a compatible source is available."
-        default: "Available data remains visible. Check Settings for recovery options."
+            }.controlSize(.small)
         }
     }
 }

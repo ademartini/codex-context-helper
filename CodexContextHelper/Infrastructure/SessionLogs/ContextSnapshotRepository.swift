@@ -1,12 +1,12 @@
 import Foundation
 
 actor ContextSnapshotRepository {
-    private let root: URL
+    nonisolated let root: URL
     private let watcher: SessionDirectoryWatcher
     private var tasks: [String: TaskSummary] = [:]
     private var readers: [String: SessionLogReader] = [:]
 
-    init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")) {
+    init(root: URL = CodexDataLocation.sessions) {
         self.root = root
         watcher = SessionDirectoryWatcher(root: root)
     }

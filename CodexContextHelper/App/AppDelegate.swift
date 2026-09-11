@@ -36,8 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.coordinator = coordinator
             let login = LaunchAtLoginController(model: model)
             self.login = login; login.synchronize()
+            model.onRetryAccount = { [weak coordinator] in coordinator?.retryAccount() }
             model.onRefresh = { [weak coordinator] in coordinator?.refresh() }
             model.onExecutableApproved = { [weak coordinator] in coordinator?.executableApproved() }
+            model.onDisconnectAccount = { [weak coordinator] in coordinator?.disconnectAccount() }
             model.onLoginChange = { [weak login] enabled in login?.setEnabled(enabled) }
             coordinator.start()
             NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workspaceActivated(_:)), name: NSWorkspace.didActivateApplicationNotification, object: nil)

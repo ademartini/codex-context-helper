@@ -4,12 +4,12 @@ import Darwin
 /// Errors deliberately contain no server text, request parameters, or subprocess output.
 enum AppServerError: Error, Equatable, Sendable {
     case forbiddenMethod, invalidParameters, notConnected, malformedResponse, frameTooLarge
-    case timeout, disconnected, unsupportedMethod, signedOut, serverFailure, tooManyRequests
+    case timeout, disconnected, unsupportedMethod, rejectedParameters, signedOut, serverFailure, tooManyRequests
 
     var unavailableReason: UnavailableReason {
         switch self {
         case .signedOut: .signedOut
-        case .malformedResponse, .frameTooLarge, .unsupportedMethod: .unsupportedSchema
+        case .malformedResponse, .frameTooLarge, .unsupportedMethod, .rejectedParameters: .unsupportedSchema
         default: .disconnected
         }
     }
@@ -62,6 +62,7 @@ actor JSONRPCConnection: AppServerRequesting {
     private var reader: Task<Void, Never>?
     private var cleanupTask: Task<Bool, Never>?
     private var buffer = Data()
+    private var unsupportedMethods = Set<String>()
     private var nextID: Int64 = 0
     private var pending: [Int64: CheckedContinuation<JSONValue, any Error>] = [:]
     private var deadlines: [Int64: Task<Void, Never>] = [:]
@@ -112,7 +113,12 @@ actor JSONRPCConnection: AppServerRequesting {
     func request(method: String, params: JSONValue = .object([:])) async throws -> JSONValue {
         try Self.validate(method: method, params: params)
         guard health == .connected else { throw AppServerError.notConnected }
-        return try await send(method: method, params: params)
+        guard !unsupportedMethods.contains(method) else { throw AppServerError.unsupportedMethod }
+        do { return try await send(method: method, params: params) }
+        catch AppServerError.unsupportedMethod {
+            unsupportedMethods.insert(method)
+            throw AppServerError.unsupportedMethod
+        }
     }
 
     /// Both the method and potentially mutating/read-content options are checked at the wire boundary.
@@ -210,6 +216,7 @@ actor JSONRPCConnection: AppServerRequesting {
             let safe: AppServerError
             switch error["code"]?.integer {
             case -32601: safe = .unsupportedMethod
+            case -32602: safe = .rejectedParameters
             case 401, 403: safe = .signedOut
             default: safe = .serverFailure
             }

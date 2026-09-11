@@ -4,7 +4,6 @@ struct CompactContextView: View {
     @ObservedObject var model: PanelViewModel
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MonitorRecoveryView(model: model)
             ScrollView {
                 VStack(alignment: .leading, spacing: 9) {
                     if let task = model.selectedTask {
@@ -22,8 +21,12 @@ struct CompactContextView: View {
                             Text("\(model.creditsLabel(task.cost)) · estimated").font(.caption).foregroundStyle(.secondary)
                             if let notice = model.staleNotice(task.cost) { Text(notice).font(.caption2).foregroundStyle(.orange) }
                         }
+                    } else if !model.tasks.isEmpty {
+                        Text("Choose a task to monitor").font(.headline)
+                        Text(model.selectionExplanation).font(.callout).foregroundStyle(.secondary)
+                        TaskPickerView(model: model)
                     } else {
-                        Text("Waiting for task data").font(.headline)
+                        LocalActivityEmptyView(model: model)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).id("task-heading")
             }.scrollIndicators(.hidden)
@@ -38,7 +41,7 @@ struct CompactContextView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("\(context.estimatedRemainingPercentage)%")
                         .font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("context remaining").font(.caption).foregroundStyle(.secondary)
+                    Text("context remaining · est.").font(.caption).foregroundStyle(.secondary)
                 }
                 .help("Estimated from Codex’s latest saved response. Open task details for the calculation and timestamp.")
                 ProgressView(value: Double(context.estimatedRemainingPercentage), total: 100)
@@ -106,6 +109,7 @@ struct CompactAccountUsageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Account limits").font(.system(.caption, weight: .semibold))
+            AccountConnectionView(model: model)
             if let notice = model.staleNotice(model.account.quotas) { Text(notice).font(.caption2).foregroundStyle(.orange) }
                 VStack(alignment: .leading, spacing: 9) {
                     if let buckets = model.account.quotas.value, !buckets.isEmpty {
@@ -126,7 +130,7 @@ struct CompactAccountUsageView: View {
                                 ForEach(bucket.unavailableWindows, id: \.self) { Text("\($0): unavailable").font(.caption2).foregroundStyle(.secondary) }
                             }
                         }
-                    } else {
+                    } else if model.connectionIssue == nil {
                         Text(model.account.quotas.unavailableReason?.label ?? "No account limits returned")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -142,7 +146,7 @@ struct AgentSummaryButton: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Image(systemName: "person.2")
-                    Text(discovery.map { "\($0.tasks.count) agents" } ?? "Agents")
+                    Text(discovery.map { $0.tasks.isEmpty && !$0.exhaustive ? "Agents · partial discovery" : "\($0.tasks.count) agents\($0.exhaustive ? "" : " found")" } ?? "Agents")
                     Spacer()
                     if let total = discovery?.totalTokens {
                         Text("\(total.formatted(.number.notation(.compactName))) tokens")
@@ -150,7 +154,7 @@ struct AgentSummaryButton: View {
                     }
                     Image(systemName: "chevron.right")
                 }
-                if let discovery, !discovery.coverageNote.isEmpty {
+                if let discovery, !discovery.tasks.isEmpty, !discovery.coverageNote.isEmpty {
                     Text(String(discovery.coverageNote.dropFirst(3)))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
@@ -172,7 +176,7 @@ struct AgentsPageView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(model.agentPageTask?.title ?? "Task agents").font(.headline).lineLimit(2)
                 if let discovery = model.agentDiscovery, discovery.rootID == model.agentPageTask?.id {
-                    Text("\(discovery.tasks.count) agents").font(.caption).foregroundStyle(.secondary)
+                    Text(discovery.tasks.isEmpty && !discovery.exhaustive ? "Agent discovery is incomplete" : "\(discovery.tasks.count) agents\(discovery.exhaustive ? "" : " found")").font(.caption).foregroundStyle(.secondary)
                     if let total = discovery.totalTokens {
                         Text("\(total.formatted(.number.notation(.compactName))) total tokens\(discovery.coverageNote)")
                             .font(.caption).foregroundStyle(.secondary)

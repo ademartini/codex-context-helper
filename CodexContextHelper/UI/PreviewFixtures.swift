@@ -14,6 +14,7 @@ enum PreviewFixtures {
                                    cost: .available(TaskCostEstimate(threadID: root.id, creditMicros: 1_234_567, usdMicros: nil)!, source)), TaskSnapshot(task: unavailable)]
         model.selection = TaskSelection(threadID: root.id, provenance: .exact)
         model.connectionIssue = nil
+        model.localDiscoveryIssue = nil
         model.account = AccountUsageSnapshot(quotas: .available([
             QuotaBucket(id: "fixture-a", name: "Standard quota", windows: [QuotaWindow(id: "primary", usedPercentage: 45, windowDurationMinutes: 300, resetsAt: Date().addingTimeInterval(3600))]),
             QuotaBucket(id: "fixture-b", name: "Additional quota", windows: [QuotaWindow(id: "secondary", usedPercentage: 60, windowDurationMinutes: 10080, resetsAt: Date().addingTimeInterval(86000))])

@@ -83,7 +83,7 @@ if [[ "$package_mode" == development ]]; then
   cat >"$output_dir/DEVELOPMENT-ONLY.txt" <<'NOTICE'
 Development-only local build. Signed ad-hoc with Hardened Runtime.
 Not signed with Developer ID, not notarized, and not approved for distribution.
-Launch this app from a stable location when testing Accessibility or launch at login.
+Launch this app from a stable location when testing launch at login.
 No tool, SDK, dependency, signing identity, or notarization profile was acquired.
 NOTICE
 else

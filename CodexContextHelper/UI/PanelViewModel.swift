@@ -2,7 +2,7 @@ import AppKit
 import Combine
 
 enum TaskTrackingMode: Equatable {
-    case latest, codex, pinned(String)
+    case codex, pinned(String)
 }
 
 @MainActor
@@ -11,14 +11,16 @@ final class PanelViewModel: ObservableObject {
     @Published var tasks: [TaskSnapshot] = []
     @Published var selection = TaskSelection(threadID: nil, provenance: .inferred(.connecting))
     @Published var account = AccountUsageSnapshot(quotas: .unavailable(.connecting), dailyTokens: .unavailable(.connecting))
+    @Published var localDiscoveryIssue: UnavailableReason? = .connecting
     @Published var connectionIssue: UnavailableReason? = .connecting
     @Published var detailID: String?
     @Published var showsSettings = false
     @Published var showsHistory = false
-    @Published var trackingMode: TaskTrackingMode = .latest
+    @Published var trackingMode: TaskTrackingMode = .codex
     @Published var panelVisible = true
     @Published var executableCandidate = ""
     @Published var isApproving = false
+    @Published var isDiscoveringExecutable = false
     @Published var settingsMessage: String?
     @Published var rollup: AgentRollup?
     @Published var agentDiscovery: AgentDiscoverySnapshot?
@@ -33,7 +35,9 @@ final class PanelViewModel: ObservableObject {
     var onTaskTrackingChange: (() -> Void)?
     var onVisibilityChanged: (() -> Void)?
     var onExecutableApproved: (() -> Void)?
+    var onDisconnectAccount: (() -> Void)?
     var onRefresh: (() -> Void)?
+    var onRetryAccount: (() -> Void)?
     var onLoginChange: ((Bool) -> Void)?
 
     init(settingsStore: any SettingsStoring = SettingsStore()) {
@@ -60,23 +64,23 @@ final class PanelViewModel: ObservableObject {
         if case .pinned(let id) = mode, !tasks.contains(where: { $0.id == id }) { return }
         trackingMode = mode
         if case .pinned(let id) = mode { selection = TaskSelection(threadID: id, provenance: .pinned) }
-        if mode == .latest { selectLatest() }
+        if mode == .codex { selection = TaskSelection(threadID: nil, provenance: .inferred(.connecting)) }
         back(); onTaskTrackingChange?()
-    }
-    func selectLatest() {
-        let latest = tasks.max {
-            let lhs = $0.task.recencyAt ?? $0.task.updatedAt
-            let rhs = $1.task.recencyAt ?? $1.task.updatedAt
-            return lhs == rhs ? $0.id < $1.id : lhs < rhs
-        }
-        let next = TaskSelection(threadID: latest?.id, provenance: .latest)
-        if selection != next { selection = next }
     }
     var trackingLabel: String {
         switch trackingMode {
-        case .latest: "Following latest activity"
-        case .codex: selection.provenance == .exact ? "Following Codex selection" : "Following recent activity · no Codex match"
+        case .codex: "Following Codex selection"
         case .pinned: "Pinned to this task"
+        }
+    }
+    var selectionExplanation: String {
+        switch selection.provenance {
+        case .inferred(.permissionDenied): "The helper can’t read Codex’s task-selection information. Choose a task below to pin it."
+        case .inferred(.connecting): "Checking which task is selected in Codex. You can also pin a task below."
+        case .inferred(.disconnected): "Open Codex to follow its selected task, or pin a task below."
+        case .inferred(.noData): "Click a local task in Codex’s main window, or choose a task below to pin it."
+        case .inferred(.missingSession): "The selected task’s saved session is not available locally yet. Choose a task below to pin it."
+        default: "Automatic selection is unavailable. Click a local task in Codex’s main window to retry, or choose a task below to pin it."
         }
     }
     func openHistory() { back(); showsHistory = true; onPreferencesChanged?() }
@@ -90,7 +94,10 @@ final class PanelViewModel: ObservableObject {
     }
     func openSettings() {
         back(); showsSettings = true; onPreferencesChanged?()
-        if executableCandidate.isEmpty { discoverExecutable() }
+    }
+    func openAccountSettings() {
+        openSettings()
+        if executableCandidate.isEmpty || connectionIssue == .executableChanged { discoverExecutable() }
     }
     func back() {
         let wasAgents = showsAgents
@@ -100,6 +107,7 @@ final class PanelViewModel: ObservableObject {
     func hide() { panelVisible = false; onVisibilityChanged?() }
     func show() { panelVisible = true; onVisibilityChanged?(); onRefresh?() }
     func refresh() { onRefresh?() }
+    func retryAccountUsage() { onRetryAccount?() }
     func requestAccessibility() { permission.requestFromSettings(); objectWillChange.send() }
     func setLaunchAtLogin(_ enabled: Bool) { onLoginChange?(enabled) }
     func chooseExecutable() {
@@ -108,7 +116,69 @@ final class PanelViewModel: ObservableObject {
         picker.canChooseDirectories = false; picker.allowsMultipleSelection = false
         if picker.runModal() == .OK, let url = picker.url { executableCandidate = url.path }
     }
-    func discoverExecutable() { Task { executableCandidate = await AppServerProcess.discover() ?? "" } }
+    func revealSessionFolder() {
+        let folder = FileManager.default.fileExists(atPath: CodexDataLocation.sessions.path) ? CodexDataLocation.sessions : CodexDataLocation.home
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
+    }
+    func discoverExecutable() {
+        guard !isDiscoveringExecutable, !isApproving else { return }
+        isDiscoveringExecutable = true
+        Task {
+            defer { isDiscoveringExecutable = false }
+            executableCandidate = await AppServerProcess.discover() ?? ""
+            if executableCandidate.isEmpty { settingsMessage = "No Codex CLI found. Install and sign in to the CLI to connect account usage, or use Choose CLI installation." }
+        }
+    }
+    func disconnectAccountUsage() {
+        settings.approvedExecutable = nil
+        persist()
+        connectionIssue = .unapprovedExecutable
+        account.quotas = account.quotas.markedStale()
+        account.dailyTokens = account.dailyTokens.markedStale()
+        settingsMessage = "Account usage disconnected. Local monitoring continues."
+        onDisconnectAccount?()
+    }
+    var localEmptyTitle: String {
+        switch localDiscoveryIssue {
+        case .connecting: "Looking for local Codex activity…"
+        case .permissionDenied: "Can’t read local Codex activity"
+        case .unsupportedSchema, .invalidCounters: "Local activity format unavailable"
+        case .noData, .missingSession, nil: "No local Codex activity yet"
+        default: "Local Codex activity unavailable"
+        }
+    }
+    var localEmptyExplanation: String {
+        switch localDiscoveryIssue {
+        case .connecting: "Reading saved sessions on this Mac."
+        case .permissionDenied: "The helper can’t access the Codex session folder. Check its access in Finder, then retry."
+        case .unsupportedSchema, .invalidCounters: "Saved sessions could not be read. A helper update may be needed."
+        case .noData, .missingSession, nil: "Start a local task in Codex. Saved context will appear here automatically."
+        default: "Check the Codex session folder, then retry."
+        }
+    }
+    var accountConnectionLabel: String {
+        switch connectionIssue {
+        case .unapprovedExecutable: "Requires a signed-in Codex CLI"
+        case .connecting: "Connecting account usage…"
+        case .executableChanged: "Codex CLI updated · review to reconnect"
+        case .signedOut: "Sign in to the Codex CLI, then retry"
+        case .unsupportedSchema: "Account data isn’t supported by this connection"
+        case .permissionDenied: "Account connection access unavailable"
+        case nil: "Account usage connected"
+        default: "Account usage disconnected"
+        }
+    }
+    static func approvalFailureMessage(_ error: Error) -> String {
+        switch error as? ExecutableError {
+        case .invalidFile: "Can’t read this executable. Discover or choose your installed Codex CLI."
+        case .unsafePermissions: "This executable has unsafe ownership or permissions. Choose a trusted installation that other users can’t modify."
+        case .unsupportedExecutable: "Choose the native Codex executable. Discover can find it inside an installed CLI package."
+        case .changed: "The executable changed during approval. Review the installation and try again."
+        case .unsupportedVersion: "This executable didn’t return a recognized Codex CLI version. Choose a Codex CLI installation."
+        case .timedOut: "The Codex CLI did not respond in time. Try again or choose another installation."
+        case .launchFailed, nil: "Couldn’t run the Codex CLI. Check the installation, then try again."
+        }
+    }
     func approveExecutable() {
         guard !isApproving, !executableCandidate.isEmpty else { return }
         isApproving = true; settingsMessage = nil
@@ -118,10 +188,10 @@ final class PanelViewModel: ObservableObject {
             do {
                 settings.approvedExecutable = try await AppServerProcess.approve(path: candidate)
                 executableCandidate = settings.approvedExecutable!.path
-                persist(); settingsMessage = "Approved Codex \(AppServerProcess.supportedVersion)."
+                persist(); settingsMessage = "Approved Codex CLI \(settings.approvedExecutable!.version). Connecting account usage…"
                 onExecutableApproved?()
             } catch {
-                settingsMessage = "Approval failed. Choose a non-writable native Codex \(AppServerProcess.supportedVersion) executable. Nothing was installed."
+                settingsMessage = Self.approvalFailureMessage(error)
             }
         }
     }

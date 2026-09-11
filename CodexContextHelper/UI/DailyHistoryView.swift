@@ -34,9 +34,9 @@ struct DailyHistoryView: View {
                         }.font(.caption)
                     }
                 } else {
-                    Text("Codex has not reported daily activity.").font(.caption).foregroundStyle(.secondary)
+                    Text(model.connectionIssue == .unapprovedExecutable ? "Connect the Codex CLI in Settings to see account-wide history." : "Codex has not reported daily activity.").font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Tokens across responses, separate from current context or cost.")
+                Text("Account-wide tokens across responses. Local session totals are not used to fill missing history.")
                     .font(.caption2).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
         }.frame(minHeight: 0).accessibilityIdentifier("history.page")

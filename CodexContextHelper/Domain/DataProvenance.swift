@@ -10,13 +10,16 @@ struct DataProvenance: Equatable, Codable, Sendable {
     var counterAt: Date?
     var measurement: MeasurementKind
     var invalidated: Bool = false
+    /// Observed producer releases are diagnostic information, independent of the reader schema.
+    var producerVersions: [String]?
 
-    init(source: DataSource, schemaVersion: String, observedAt: Date = Date(), counterAt: Date? = nil, measurement: MeasurementKind = .exact) {
+    init(source: DataSource, schemaVersion: String, observedAt: Date = Date(), counterAt: Date? = nil, measurement: MeasurementKind = .exact, producerVersions: [String]? = nil) {
         self.source = source
         self.schemaVersion = schemaVersion
         self.observedAt = observedAt
         self.counterAt = counterAt
         self.measurement = measurement
+        self.producerVersions = producerVersions.map { Array(Set($0.filter(SessionLogSchema.isValidProducerVersion)).sorted().prefix(32)) }
     }
 
     func isStale(at now: Date = Date(), maxAge: TimeInterval = 60) -> Bool {
@@ -61,14 +64,12 @@ enum Metric<Value: Equatable & Sendable>: Equatable, Sendable {
 enum SelectionProvenance: Equatable, Sendable {
     case exact
     case pinned
-    case latest
     case inferred(UnavailableReason)
     var label: String {
         switch self {
         case .exact: "Selected in Codex"
         case .pinned: "Pinned task"
-        case .latest: "Latest activity"
-        case .inferred: "Following recent activity"
+        case .inferred: "Selection unavailable"
         }
     }
 }

@@ -23,6 +23,7 @@ final class SessionLogReader {
     private var metadataVerified = false
     private var sawMetadata = false
     private var inheritedIDs = Set<String>()
+    private var producerVersions = Set<String>()
     private var permanentlyUnsupported = false
     private var failure: UnavailableReason?
     private var context: ContextSnapshot?
@@ -51,17 +52,22 @@ final class SessionLogReader {
         let components = normalized.dropFirst(base.count + 1).split(separator: "/").map(String.init)
         guard !components.isEmpty else { throw SessionLogSchema.SchemaError.invalid }
         var parent = open(base, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard parent >= 0 else { throw SessionLogSchema.SchemaError.invalid }
+        guard parent >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         for (index, component) in components.enumerated() {
             let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (index == components.count - 1 ? 0 : O_DIRECTORY)
             let next = openat(parent, component, flags)
+            let openError = errno
             Darwin.close(parent)
-            guard next >= 0 else { throw SessionLogSchema.SchemaError.invalid }
+            guard next >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(openError)) }
             parent = next
         }
         var info = stat()
-        guard fstat(parent, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
-            Darwin.close(parent); throw SessionLogSchema.SchemaError.invalid
+        let statResult = fstat(parent, &info)
+        let statError = errno
+        guard statResult == 0, info.st_mode & S_IFMT == S_IFREG else {
+            Darwin.close(parent)
+            if statResult != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(statError)) }
+            throw SessionLogSchema.SchemaError.invalid
         }
         return parent
     }
@@ -112,13 +118,14 @@ final class SessionLogReader {
             case .metadata(let id, let version, let name, let parentID, let forkID):
                 if !sawMetadata {
                     sawMetadata = true
-                    metadataVerified = id == threadID && version == AppServerProcess.supportedVersion
+                    metadataVerified = id == threadID
                     permanentlyUnsupported = !metadataVerified
                     agentName = metadataVerified ? name : nil
-                } else if version != AppServerProcess.supportedVersion || (id != threadID && !inheritedIDs.contains(id)) {
+                } else if id != threadID && !inheritedIDs.contains(id) {
                     permanentlyUnsupported = true
                 }
                 if permanentlyUnsupported { failure = .unsupportedSchema; return }
+                if producerVersions.count < 32 { producerVersions.insert(version) }
                 // Forked agents embed ancestor metadata in their copied history. Only declared
                 // parent/fork chains are accepted; the first verified header owns this file.
                 for inherited in [parentID, forkID].compactMap({ $0 }) where inheritedIDs.count < 200 {
@@ -137,6 +144,8 @@ final class SessionLogReader {
                 context = value; counterAt = date; failure = nil
             case .ignored: break
             }
+        } catch SessionLogSchema.SchemaError.invalidMetadata {
+            sawMetadata = true; permanentlyUnsupported = true; failure = .unsupportedSchema
         } catch { failure = .unsupportedSchema }
     }
 
@@ -146,7 +155,7 @@ final class SessionLogReader {
         else if more { metric = .unavailable(.connecting) }
         else if let context {
             metric = .available(context, DataProvenance(source: .sessionLog, schemaVersion: SessionLogSchema.version,
-                                                       observedAt: now, counterAt: counterAt))
+                                                       observedAt: now, counterAt: counterAt, producerVersions: producerVersions.sorted()))
         } else { metric = .unavailable(.noData) }
         return SessionReadResult(context: metric, model: model, moreData: more, agentName: agentName)
     }

@@ -118,7 +118,7 @@ final class JSONRPCConnectionTests: XCTestCase, @unchecked Sendable {
     }
 
     func testUnsupportedMethodAndAuthenticationErrorsAreSanitized() async throws {
-        for (code, expected): (Int, AppServerError) in [(-32601, .unsupportedMethod), (401, .signedOut), (-32000, .serverFailure)] {
+        for (code, expected): (Int, AppServerError) in [(-32601, .unsupportedMethod), (-32602, .rejectedParameters), (401, .signedOut), (-32000, .serverFailure)] {
             let child = process(handshake + "\n" + """
             request = json.loads(sys.stdin.readline())
             emit({'id':request['id'], 'error':{'code':\(code), 'message':'PRIVATE_SERVER_ERROR', 'data':{'secret':'PRIVATE_TOKEN'}}})
@@ -129,6 +129,54 @@ final class JSONRPCConnectionTests: XCTestCase, @unchecked Sendable {
             let error = await requestError(connection, method: "account/usage/read")
             XCTAssertEqual(error, expected)
             XCTAssertFalse(String(describing: error).contains("PRIVATE"))
+            await connection.close()
+        }
+    }
+
+    func testUnsupportedMethodsAreCachedPerConnectionAndOtherMethodsContinue() async throws {
+        let child = process(handshake + "\n" + """
+        first = json.loads(sys.stdin.readline())
+        emit({'id':first['id'], 'error':{'code':-32601}})
+        second = json.loads(sys.stdin.readline())
+        emit({'id':second['id'], 'result':{'method':second['method']}})
+        time.sleep(30)
+        """)
+        let connection = JSONRPCConnection(process: child)
+        try await connection.start()
+        let first = await requestError(connection, method: "account/usage/read")
+        let cached = await requestError(connection, method: "account/usage/read")
+        XCTAssertEqual(first, .unsupportedMethod)
+        XCTAssertEqual(cached, .unsupportedMethod)
+        let quotas = try await connection.request(method: "account/rateLimits/read")
+        XCTAssertEqual(quotas["method"], .string("account/rateLimits/read"))
+        await connection.close()
+
+        let replacement = JSONRPCConnection(process: process(handshake + "\n" + """
+        request = json.loads(sys.stdin.readline())
+        emit({'id':request['id'], 'result':{}})
+        time.sleep(30)
+        """))
+        try await replacement.start()
+        let retry = try await replacement.request(method: "account/usage/read")
+        XCTAssertEqual(retry, .object([:]))
+        await replacement.close()
+    }
+
+    func testTransientAndParameterErrorsDoNotDisableMethod() async throws {
+        for code in [-32602, 401, -32000] {
+            let child = process(handshake + "\n" + """
+            first = json.loads(sys.stdin.readline())
+            emit({'id':first['id'], 'error':{'code':\(code)}})
+            second = json.loads(sys.stdin.readline())
+            emit({'id':second['id'], 'result':{}})
+            time.sleep(30)
+            """)
+            let connection = JSONRPCConnection(process: child)
+            try await connection.start()
+            let first = await requestError(connection, method: "account/usage/read")
+            XCTAssertNotNil(first)
+            let retry = try await connection.request(method: "account/usage/read")
+            XCTAssertEqual(retry, .object([:]))
             await connection.close()
         }
     }

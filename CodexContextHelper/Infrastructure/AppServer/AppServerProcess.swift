@@ -9,12 +9,11 @@ enum ExecutableError: Error, Equatable {
 /// Executes only approved native Codex binaries, avoiding untracked script/interpreter dependencies.
 /// npm launchers are resolved to their already-installed native binary before approval.
 enum AppServerProcess {
-    static let supportedVersion = "0.153.4"
-
     static func environment(launcherPATH: String?) -> [String: String] {
         ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
          "PATH": launcherPATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
-         "LANG": "en_US.UTF-8", "TMPDIR": NSTemporaryDirectory()]
+         "LANG": "en_US.UTF-8", "TMPDIR": NSTemporaryDirectory(),
+         "CODEX_HOME": CodexDataLocation.home.path]
     }
 
     static func identity(at path: String) throws -> String {
@@ -54,11 +53,11 @@ enum AppServerProcess {
     }
 
     static func make(approved: ApprovedExecutable) throws -> Process {
-        guard approved.version == supportedVersion else { throw ExecutableError.unsupportedVersion }
+        _ = try parseVersionOutput("codex-cli \(approved.version)")
         guard try identity(at: approved.path) == approved.identity else { throw ExecutableError.changed }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: approved.path)
-        process.arguments = ["app-server", "--stdio", "-c", "analytics.enabled=false"]
+        process.arguments = ["app-server", "-c", "analytics.enabled=false"]
         process.environment = environment(launcherPATH: approved.launcherPATH)
         process.standardInput = Pipe(); process.standardOutput = Pipe()
         process.standardError = FileHandle.nullDevice
@@ -71,41 +70,64 @@ enum AppServerProcess {
         return try await Task.detached(priority: .userInitiated) {
             let fingerprint = try identity(at: canonical)
             let output = try runBounded(path: canonical, arguments: ["--version"], launcherPATH: launcherPATH)
-            guard output.trimmingCharacters(in: .whitespacesAndNewlines) == "codex-cli \(supportedVersion)" else {
-                throw ExecutableError.unsupportedVersion
-            }
+            let version = try parseVersionOutput(output)
             guard try identity(at: canonical) == fingerprint else { throw ExecutableError.changed }
-            return ApprovedExecutable(path: canonical, identity: fingerprint, version: supportedVersion, launcherPATH: launcherPATH)
+            return ApprovedExecutable(path: canonical, identity: fingerprint, version: version, launcherPATH: launcherPATH)
         }.value
+    }
+
+    /// Validate CLI identity and bounded semantic-version syntax; a release number is not a capability gate.
+    static func parseVersionOutput(_ output: String) throws -> String {
+        guard output.utf8.count <= 256 else { throw ExecutableError.unsupportedVersion }
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.hasPrefix("codex-cli ") else { throw ExecutableError.unsupportedVersion }
+        let version = String(text.dropFirst("codex-cli ".count))
+        let pattern = #"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"#
+        guard version.utf8.count <= 128,
+              let match = version.range(of: pattern, options: .regularExpression), match == version.startIndex..<version.endIndex else {
+            throw ExecutableError.unsupportedVersion
+        }
+        let release = version.split(separator: "+", maxSplits: 1)[0]
+        if let dash = release.firstIndex(of: "-") {
+            let prerelease = release[release.index(after: dash)...]
+            for component in prerelease.split(separator: ".") {
+                if component.allSatisfy({ $0.isNumber }), component.count > 1, component.first == "0" {
+                    throw ExecutableError.unsupportedVersion
+                }
+            }
+        }
+        return version
     }
 
     static func discover() async -> String? {
         await Task.detached(priority: .utility) {
-            // GUI login-shell PATH can prefer an obsolete Homebrew install over an audited npm install.
-            // Inspect only package version metadata; executing --version still requires the approval action.
+            // Prefer the user's active installation. Discovery never executes Codex itself.
+            // Fixed command only; no user text is interpolated into the login shell.
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            if ["/bin/zsh", "/bin/bash", "/bin/sh"].contains(shell),
+               let output = try? runBounded(path: shell, arguments: ["-lc", "command -v codex"], launcherPATH: nil),
+               let path = output.split(separator: "\n").last.map(String.init), path.hasPrefix("/"),
+               let candidate = nativeCandidate(at: path) { return candidate }
+
+            // Some GUI login shells omit nvm; fall back to installed packages without pinning a release.
             let manager = FileManager.default
             let versions = manager.homeDirectoryForCurrentUser.appendingPathComponent(".nvm/versions/node")
             if let directories = try? manager.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil) {
                 let ordered = directories.sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
                 for directory in ordered.prefix(20) {
                     let package = directory.appendingPathComponent("lib/node_modules/@openai/codex")
-                    struct PackageVersion: Decodable { let version: String }
-                    guard let data = try? Data(contentsOf: package.appendingPathComponent("package.json")), data.count < 64 * 1024,
-                          let metadata = try? JSONDecoder().decode(PackageVersion.self, from: data), metadata.version == supportedVersion else { continue }
                     if let candidate = nativePackageBinary(package) { return candidate }
                 }
             }
-            // Fixed command only; no user text is interpolated into the login shell.
-            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            guard ["/bin/zsh", "/bin/bash", "/bin/sh"].contains(shell),
-                  let output = try? runBounded(path: shell, arguments: ["-lc", "command -v codex"], launcherPATH: nil),
-                  let path = output.split(separator: "\n").last.map(String.init), path.hasPrefix("/") else { return nil }
-            let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-            if (try? identity(at: canonical.path)) != nil { return canonical.path }
-            // Resolve the official npm layout without running its JavaScript launcher or downloading anything.
-            let package = canonical.deletingLastPathComponent().deletingLastPathComponent()
-            return nativePackageBinary(package)
+            return nil
         }.value
+    }
+
+    private static func nativeCandidate(at path: String) -> String? {
+        let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        if (try? identity(at: canonical.path)) != nil { return canonical.path }
+        // Resolve the official npm layout without running its JavaScript launcher or downloading anything.
+        return nativePackageBinary(canonical.deletingLastPathComponent().deletingLastPathComponent())
     }
 
     private static func nativePackageBinary(_ package: URL) -> String? {

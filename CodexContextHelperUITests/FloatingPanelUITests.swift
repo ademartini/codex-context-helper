@@ -16,7 +16,8 @@ final class FloatingPanelUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(app.buttons["task.details"].waitForExistence(timeout: 3))
         app.buttons["panel.settings"].click()
-        XCTAssertTrue(app.textFields["settings.executable"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Account limits & history"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.textFields["settings.executable"].exists, "Manual executable entry starts under Choose CLI installation")
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Sanitized settings view"
         screenshot.lifetime = .keepAlways

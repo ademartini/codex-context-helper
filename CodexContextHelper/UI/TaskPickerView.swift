@@ -4,8 +4,8 @@ struct TaskPickerView: View {
     @ObservedObject var model: PanelViewModel
     var body: some View {
         Menu {
-            Button { model.track(.latest) } label: {
-                Label("Follow latest activity", systemImage: model.trackingMode == .latest ? "checkmark" : "clock")
+            Button { model.track(.codex) } label: {
+                Label("Follow Codex selection", systemImage: model.trackingMode == .codex ? "checkmark" : "cursorarrow")
             }
             Divider()
             Text("Recent tasks · newest first")
@@ -31,7 +31,7 @@ struct TaskPickerView: View {
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .accessibilityLabel("Choose monitored task")
         .accessibilityIdentifier("task.picker")
-        .help("Follow activity automatically, or pin a recent task for this launch.")
+        .help("Follow the task you click in Codex, or pin a task for this launch.")
     }
 
     private func summary(_ task: TaskSnapshot) -> String {

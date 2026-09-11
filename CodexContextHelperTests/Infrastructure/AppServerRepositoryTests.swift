@@ -167,6 +167,51 @@ final class AppServerRepositoryTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testRejectedDescendantShapeIsCachedWithoutDisablingRecentCatalogOrAccount() async throws {
+        let fake = FixtureAppServer { method, params in
+            if method == "thread/read" { return .object(["thread": Self.row("root")]) }
+            if method == "account/read" { return .object(["account": .object(["type": .string("chatgpt")])]) }
+            if method == "account/rateLimits/read" {
+                return .object(["rateLimits": .object(["primary": .object(["usedPercent": .integer(7)])])])
+            }
+            if method == "account/usage/read" { return .object([:]) }
+            if params["ancestorThreadId"] != nil { throw AppServerError.rejectedParameters }
+            XCTAssertEqual(params["useStateDbOnly"], .bool(true))
+            return Self.page([Self.row("recent")])
+        }
+        let repository = AppServerRepository(connection: fake)
+        for _ in 0..<2 {
+            let descendants = try await repository.descendants(rootID: "root")
+            XCTAssertFalse(descendants.exhaustive)
+            XCTAssertEqual(descendants.tasks.map(\.id), ["root"])
+        }
+        let recent = try await repository.recentTasks(count: 10)
+        XCTAssertEqual(recent.map(\.id), ["recent"])
+        let account = await repository.accountUsage()
+        XCTAssertEqual(account.quotas.value?.first?.windows.first?.usedPercentage, 7)
+        let calls = await fake.calls
+        XCTAssertEqual(calls.filter { $0.1["ancestorThreadId"] != nil }.count, 1)
+
+        // A replacement connection/repository reevaluates the previously rejected shape.
+        _ = try await AppServerRepository(connection: fake).descendants(rootID: "root")
+        let newCalls = await fake.calls
+        XCTAssertEqual(newCalls.filter { $0.1["ancestorThreadId"] != nil }.count, 2)
+    }
+
+    func testTransientDescendantFailureIsRetriedAndDoesNotWeakenReadOnlyOptions() async throws {
+        let fake = FixtureAppServer { method, params in
+            if method == "thread/read" { return .object(["thread": Self.row("root")]) }
+            XCTAssertEqual(params["useStateDbOnly"], .bool(true))
+            XCTAssertEqual(params["ancestorThreadId"], .string("root"))
+            throw AppServerError.timeout
+        }
+        let repository = AppServerRepository(connection: fake)
+        _ = try await repository.descendants(rootID: "root")
+        _ = try await repository.descendants(rootID: "root")
+        let calls = await fake.calls
+        XCTAssertEqual(calls.filter { $0.0 == "thread/list" }.count, 4)
+    }
+
     func testFailedPaginationRetainsKnownRowsAndMarksPartial() async throws {
         let fake = FixtureAppServer { method, params in
             if method == "thread/read" { return .object(["thread": Self.row("root")]) }

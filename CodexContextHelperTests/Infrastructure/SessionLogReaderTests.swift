@@ -3,6 +3,52 @@ import Darwin
 @testable import CodexContextHelper
 
 final class SessionLogReaderTests: XCTestCase {
+    func testCompatibleDifferentProducerVersionsAndMixedInheritedHistory() throws {
+        for version in ["0.153.5", "0.160.0", "1.0.0-alpha.2"] {
+            try withFixture { root, file in
+                let source = try String(contentsOf: file, encoding: .utf8)
+                let updated = source.replacingOccurrences(of: "\"cli_version\":\"0.153.4\"", with: "\"cli_version\":\"\(version)\",\"parent_thread_id\":\"parent\"")
+                try updated.write(to: file, atomically: true, encoding: .utf8)
+                let reader = try SessionLogReader(root: root, path: file.path, threadID: "fixture-root")
+                XCTAssertEqual(reader.refresh().context.provenance?.producerVersions, [version])
+                try append(#"{"type":"session_meta","payload":{"id":"parent","cli_version":"0.152.0"}}"#, to: file)
+                try append(String(source.split(separator: "\n").last!), to: file)
+                let mixed = reader.refresh()
+                XCTAssertEqual(mixed.context.value?.latestResponse.total, 250)
+                XCTAssertEqual(mixed.context.provenance?.producerVersions, ["0.152.0", version].sorted())
+                XCTAssertEqual(mixed.context.provenance?.schemaVersion, "session-counters-v2")
+            }
+        }
+    }
+    func testMalformedAndOversizedProducerVersionsAreRejected() throws {
+        for version in ["", "unexpected version", String(repeating: "1", count: 129)] {
+            try withFixture { root, file in
+                let source = try String(contentsOf: file, encoding: .utf8)
+                try source.replacingOccurrences(of: "\"cli_version\":\"0.153.4\"", with: "\"cli_version\":\"\(version)\"")
+                    .write(to: file, atomically: true, encoding: .utf8)
+                let result = try SessionLogReader(root: root, path: file.path, threadID: "fixture-root").refresh()
+                XCTAssertEqual(result.context.unavailableReason, .unsupportedSchema)
+            }
+        }
+    }
+    func testMalformedInheritedMetadataCannotBeClearedByLaterCounters() throws {
+        try withFixture { root, file in
+            let source = try String(contentsOf: file, encoding: .utf8)
+            let reader = try SessionLogReader(root: root, path: file.path, threadID: "fixture-root")
+            XCTAssertNotNil(reader.refresh().context.value)
+            try append(#"{"type":"session_meta","payload":{"id":"fixture-root","cli_version":"bad version"}}"#, to: file)
+            try append(String(source.split(separator: "\n").last!), to: file)
+            XCTAssertEqual(reader.refresh().context.unavailableReason, .unsupportedSchema)
+        }
+    }
+    func testProvenanceDecodesWithoutProducerVersionsAndBoundsDiagnostics() throws {
+        let old = #"{"source":"sessionLog","schemaVersion":"old","observedAt":0,"measurement":"exact","invalidated":false}"#
+        let decoded = try JSONDecoder().decode(DataProvenance.self, from: Data(old.utf8))
+        XCTAssertNil(decoded.producerVersions)
+        let provenance = DataProvenance(source: .sessionLog, schemaVersion: "test", producerVersions: (0..<100).map { "0.\($0).0" } + ["bad version"])
+        XCTAssertEqual(provenance.producerVersions?.count, 32)
+        XCTAssertFalse(provenance.producerVersions?.contains("bad version") ?? true)
+    }
     func testOversizedInheritedIdentityIsRejected() throws {
         try withFixture { root, file in
             let source = try String(contentsOf: file, encoding: .utf8)

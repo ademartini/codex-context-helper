@@ -3,6 +3,15 @@ import XCTest
 
 @MainActor
 final class PanelViewModelTests: XCTestCase {
+    func testDefaultFollowsClickedTaskAndReturningFromPinClearsOldReading() {
+        let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
+        XCTAssertEqual(model.trackingMode, .codex)
+        model.tasks = [TaskSnapshot(task: TaskSummary(id: "pinned", title: "Pinned", updatedAt: Date()))]
+        model.track(.pinned("pinned"))
+        model.track(.codex)
+        XCTAssertNil(model.selectedTask, "Wait for selection evidence instead of showing the old pin")
+        XCTAssertEqual(model.trackingLabel, "Following Codex selection")
+    }
     func testOpeningAgentsKeepsCompactNavigationAndTemporarilyEnablesDiscovery() {
         let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
         let root = TaskSummary(id: "root", title: "Root task", updatedAt: Date())
@@ -34,7 +43,7 @@ final class PanelViewModelTests: XCTestCase {
         XCTAssertEqual(controller.panel.frame, original)
         controller.panel.orderOut(nil)
     }
-    func testPinAndFollowLatestAreExplicitAndHistoryDoesNotChangeSelection() {
+    func testPinAndFollowCodexAreExplicitAndHistoryDoesNotChangeSelection() {
         let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
         model.tasks = [TaskSnapshot(task: TaskSummary(id: "older", title: "Older", updatedAt: Date(timeIntervalSince1970: 10))),
                        TaskSnapshot(task: TaskSummary(id: "latest", title: "Latest", updatedAt: Date(timeIntervalSince1970: 20)))]
@@ -44,17 +53,10 @@ final class PanelViewModelTests: XCTestCase {
         model.openHistory(); XCTAssertTrue(model.showsHistory)
         model.back(); XCTAssertFalse(model.showsHistory)
         XCTAssertEqual(model.selectedTask?.id, "older")
-        model.track(.latest)
-        XCTAssertEqual(model.selectedTask?.id, "latest")
+        model.track(.codex)
+        XCTAssertNil(model.selectedTask)
         model.track(.pinned("unknown"))
-        XCTAssertEqual(model.trackingMode, .latest)
-    }
-    func testLatestActivityUsesRecencyRatherThanOnlyUpdatedTime() {
-        let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
-        model.tasks = [TaskSnapshot(task: TaskSummary(id: "active", title: "Active", updatedAt: Date(timeIntervalSince1970: 10), recencyAt: Date(timeIntervalSince1970: 30))),
-                       TaskSnapshot(task: TaskSummary(id: "updated", title: "Updated", updatedAt: Date(timeIntervalSince1970: 20)))]
-        model.selectLatest()
-        XCTAssertEqual(model.selectedTask?.id, "active")
+        XCTAssertEqual(model.trackingMode, .codex)
     }
     func testContextLabelUsesCodexBaselineAndMarksEstimate() {
         let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
@@ -95,4 +97,70 @@ final class PanelViewModelTests: XCTestCase {
         XCTAssertNotNil(model.staleNotice(fresh))
         XCTAssertNil(model.staleNotice(Metric<Int>.unavailable(.noData)))
     }
+    func testLocalDiscoveryStartsWithoutRequiringAnAccountConnection() {
+        let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
+        XCTAssertEqual(model.localDiscoveryIssue, .connecting)
+        XCTAssertEqual(model.connectionIssue, .unapprovedExecutable)
+        XCTAssertEqual(model.localEmptyTitle, "Looking for local Codex activity…")
+        model.localDiscoveryIssue = .noData
+        XCTAssertEqual(model.localEmptyTitle, "No local Codex activity yet")
+        model.localDiscoveryIssue = .permissionDenied
+        XCTAssertEqual(model.localEmptyTitle, "Can’t read local Codex activity")
+        XCTAssertTrue(model.localEmptyExplanation.contains("session folder"))
+        XCTAssertFalse(model.localEmptyExplanation.contains("Accessibility"))
+        model.localDiscoveryIssue = .unsupportedSchema
+        XCTAssertEqual(model.localEmptyTitle, "Local activity format unavailable")
+    }
+    func testDisconnectClearsSavedApprovalAndStalesOnlyAccountReadings() {
+        let store = SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!)
+        let model = PanelViewModel(settingsStore: store)
+        model.settings.approvedExecutable = ApprovedExecutable(path: "/fixture/codex", identity: "fixture", version: "1.0.0")
+        model.persist()
+        let source = DataProvenance(source: .appServer, schemaVersion: "fixture")
+        model.account = AccountUsageSnapshot(quotas: .available([], source), dailyTokens: .available([DailyTokenUsage(day: "2026-09-11", tokens: 10)], source))
+        let local = TaskSnapshot(task: TaskSummary(id: "local", title: "Local task", updatedAt: Date()))
+        model.tasks = [local]
+        model.track(.pinned(local.id))
+        model.localDiscoveryIssue = nil
+        var disconnects = 0
+        model.onDisconnectAccount = { disconnects += 1 }
+        model.disconnectAccountUsage()
+        XCTAssertNil(model.settings.approvedExecutable)
+        XCTAssertNil(store.load().approvedExecutable)
+        XCTAssertEqual(model.connectionIssue, .unapprovedExecutable)
+        XCTAssertEqual(disconnects, 1)
+        XCTAssertTrue(model.account.quotas.provenance!.invalidated)
+        XCTAssertTrue(model.account.dailyTokens.provenance!.invalidated)
+        XCTAssertEqual(model.account.dailyTokens.value?.first?.tokens, 10)
+        XCTAssertNil(model.localDiscoveryIssue)
+        XCTAssertEqual(model.selectedTask, local)
+        XCTAssertEqual(model.trackingMode, .pinned(local.id))
+    }
+    func testAccountUpdateAndRetryLeaveLocalSelectionAvailable() {
+        let model = PanelViewModel(settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "fixture.\(UUID().uuidString)")!))
+        model.tasks = [TaskSnapshot(task: TaskSummary(id: "local", title: "Local task", updatedAt: Date()))]
+        model.track(.pinned("local"))
+        model.localDiscoveryIssue = nil
+        model.connectionIssue = .executableChanged
+        XCTAssertEqual(model.accountConnectionLabel, "Codex CLI updated · review to reconnect")
+        var refreshes = 0, retries = 0
+        model.onRefresh = { refreshes += 1 }
+        model.onRetryAccount = { retries += 1 }
+        model.retryAccountUsage()
+        XCTAssertEqual(retries, 1)
+        XCTAssertEqual(refreshes, 0)
+        model.refresh()
+        XCTAssertEqual(refreshes, 1)
+        XCTAssertEqual(model.selectedTask?.id, "local")
+        XCTAssertNil(model.localDiscoveryIssue)
+        model.connectionIssue = .signedOut
+        XCTAssertEqual(model.accountConnectionLabel, "Sign in to the Codex CLI, then retry")
+    }
+    func testApprovalFailureCopyDescribesTheActualFailure() {
+        XCTAssertTrue(PanelViewModel.approvalFailureMessage(ExecutableError.unsafePermissions).contains("ownership or permissions"))
+        XCTAssertTrue(PanelViewModel.approvalFailureMessage(ExecutableError.unsupportedVersion).contains("recognized Codex CLI version"))
+        XCTAssertTrue(PanelViewModel.approvalFailureMessage(ExecutableError.timedOut).contains("respond in time"))
+        XCTAssertFalse(PanelViewModel.approvalFailureMessage(ExecutableError.unsupportedVersion).contains("0.153.4"))
+    }
+
 }

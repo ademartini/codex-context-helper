@@ -22,7 +22,11 @@ This is an independent community project, not an OpenAI product and not affiliat
   <img src="docs/images/history.png" alt="Daily token history rendered with synthetic account activity" width="260">
 </p>
 
-*Actual native views rendered with synthetic demo data. No real tasks or account information are shown.*
+*Actual native views rendered with synthetic demo data. No real tasks or account information are shown. Account limits and history illustrate a connected CLI.*
+
+<details><summary>Settings</summary>
+<p><img src="docs/images/settings.png" alt="Compact settings showing the CLI requirement for account limits and history, task selection, panel preferences and privacy, using synthetic data" width="300"></p>
+</details>
 
 - **Context remaining:** one percentage, plus saved tokens / context window.
 - **Agent overview:** a compact total opens a separate page with each agent's own context and model.
@@ -35,8 +39,19 @@ This is an independent community project, not an OpenAI product and not affiliat
 
 - macOS 14 or later. Full manual coverage across supported macOS versions is still pending.
 - Xcode with Swift 6 and its command-line tools selected. Development validation used Xcode 26.6.
-- **Codex CLI 0.153.4**, installed separately and signed in. The reader currently checks this exact version; other versions are not silently accepted.
+- Codex with readable local saved sessions. **A separate CLI is not needed for local context monitoring.**
+- **For account limits and history:** an installed, signed-in Codex CLI. This connection also supplies reported costs and richer task metadata. Compatible versions are accepted without an exact-release requirement.
 - A local Codex session store. Cloud-only task contexts may not be available.
+
+| Feature | Data source | CLI connection |
+|---|---|---|
+| Selected task and display title | Local desktop logs and catalog | Not required |
+| Context, saved task tokens and local agents | Local session files | Not required; agent coverage may be partial |
+| Account limits and reset times | Authenticated Codex app-server | Required |
+| Account-wide daily token history | Authenticated Codex app-server | Required; depends on available data |
+| Reported cost and credit estimates | Authenticated Codex app-server | Required; may be unavailable |
+
+The CLI provides the connection to account services; it does not calculate your account limits. Local session totals cannot replace complete account history. Disconnecting account features leaves task monitoring running.
 
 No third-party Swift packages are required. Build scripts use installed tools and do not install dependencies. CI does not need Codex, account credentials or Accessibility permission.
 
@@ -61,16 +76,22 @@ You can also open `CodexContextHelper.xcodeproj` and run the `CodexContextHelper
 
 ## First launch
 
-1. Open Settings from the panel or menu-bar item.
-2. Review and approve your installed Codex executable. The app checks its file identity and supported version; this does not establish publisher authenticity. Approve only a trusted installation.
-3. Choose **Follow latest activity**, or choose a recent task to pin it. Accessibility permission is not required for these modes.
-4. Drag the panel into place. Choose a task from the dropdown, open Agents or daily history, or use the menu-bar item to restore a hidden panel.
+1. Open the helper. Local saved sessions appear automatically; no CLI approval is needed.
+2. The helper follows the task you click in Codex in its main window, using local desktop selection metadata. No Accessibility permission is needed. You can also choose a local task to pin it.
+3. Choose **Connect limits & history** to enable account features. In Settings, approve your installed, signed-in Codex CLI. Task monitoring works without this connection. File and version checks do not establish publisher authenticity.
+4. Drag the panel into place, open Agents, or use the menu-bar item to restore a hidden panel.
 
-The task picker defaults to **Follow latest activity**. Choose a recent task to pin it for the current launch, even if newer tasks appear; choose Follow latest activity to resume automatic tracking. Pins are kept in memory and reset on quit.
+Task names are read from the local desktop catalog when available. Local sessions use a date/time label and short identifier when a task title is unavailable. Local agent discovery reports partial coverage. The helper uses the session folder under `CODEX_HOME` when that absolute path is provided to the app; otherwise it uses the standard `~/.codex/sessions` location. GUI apps do not automatically inherit environment variables from an interactive terminal.
+
+A CLI update may require **Review update** for the optional account connection. Local context continues working. Unsupported optional readings stay unavailable; a newer version alone produces no warning. Local data formats can still change, so compatibility with every future release is not guaranteed.
+
+Automatic following reads task-view events from the running Codex desktop app’s local diagnostic logs and verifies the exact ID against saved local sessions. Background responses do not select a task. This private log format can change; if required metadata is unavailable, use an explicit pin. Switching focus between already-open windows is not supported: click the task in the main window. Matching by title alone is unsafe because different chats can share names.
+
+The task picker defaults to **Follow Codex selection**. Background activity never chooses the monitored task. If the selected task cannot be identified, the helper says so and offers manual pinning. Choose a recent task to pin it for the current launch; choose Follow Codex selection to resume following clicks. Pins are kept in memory and reset on quit.
 
 Agents and daily history open their own pages with Back navigation at the same panel size. Details and Settings can grow downward while preserving the top-right anchor. There is no multi-section expanded dashboard.
 
-Rebuilding an ad hoc signed app changes its identity. If Accessibility is enabled in System Settings but the app cannot use it, remove only this app's entry and add the exact rebuilt app again. Keep it at a stable path. Launch at login is optional and depends on a location/signature accepted by macOS; it may be unavailable for development builds.
+Selection following no longer requests Accessibility permission, including after a rebuild. You can remove old helper entries from System Settings → Privacy & Security → Accessibility. Keep the app at a stable path for launch at login. Launch at login is optional and depends on a location/signature accepted by macOS; it may be unavailable for development builds.
 
 ## What the numbers mean
 
@@ -80,13 +101,13 @@ Cumulative token activity counts tokens across responses. It is separate from cu
 
 Agents use their own saved counters, models and windows. The summary excludes the main task and identifies partial reporting. Compaction and recorded model changes clear the preceding context reading until a new valid counter arrives. Changes cannot be reflected before Codex records them.
 
-Saved-file events are debounced; fallback context/task discovery checks run every five seconds. Selection checks run every two seconds; account, cost and agent discovery checks run about every thirty seconds. Foreground/reconnect events refresh data. These are target intervals, not freshness guarantees; ongoing responses and unavailable services can delay updates.
+Saved-file events are debounced; fallback context/task discovery checks run every five seconds. The local index keeps at most 512 recent sessions and advances through large directories in bounded slices; initial discovery may take longer for large stores. Selection checks run every second; account, cost and agent discovery checks run about every thirty seconds. Foreground/reconnect events refresh data. These are target intervals, not freshness guarantees; ongoing responses and unavailable services can delay updates.
 
 Per-task cost/credit estimates depend on what Codex exposes for the task's billing route. They may be absent for every task. The app does not invent prices, calculate an invoice, or claim combined agent costs are verified.
 
 ## Privacy and limitations
 
-The helper reads local session files and uses Codex's authenticated app-server. It has no direct network client or analytics SDK, but the Codex child may contact its services and maintain its own local state. Optional executable discovery can run your login shell's startup files. The app runs outside App Sandbox and optional Accessibility access is powerful; grant it only to a build you trust.
+The helper reads local session files, the desktop title catalog and task-selection metadata from desktop diagnostic logs. If you connect account usage, it also uses Codex's authenticated app-server. It has no direct network client or analytics SDK, but the Codex child may contact its services and maintain its own local state. Optional executable discovery can run your login shell's startup files. The app runs outside App Sandbox; run only a build you trust.
 
 Task titles and usage appear on screen. The helper stores preferences and executable approval locally, not copies of session content. See [privacy](PRIVACY.md) for details and redact screenshots before sharing.
 

@@ -14,7 +14,7 @@ private final class DemoSettings: SettingsStoring {
 @main
 struct ScreenshotRenderer {
     @MainActor static func main() throws {
-        guard CommandLine.arguments.count == 3, ["compact", "agents", "history"].contains(CommandLine.arguments[2]) else { fatalError("Provide an output directory and page name") }
+        guard CommandLine.arguments.count == 3, ["compact", "agents", "history", "local-only", "empty", "access", "update", "settings", "selection"].contains(CommandLine.arguments[2]) else { fatalError("Provide an output directory and page name") }
         let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let app = NSApplication.shared
@@ -35,8 +35,11 @@ struct ScreenshotRenderer {
         model.tasks = [snapshot("demo-root", "Polish the onboarding flow", 72_180, 820_000, "Main model"),
                        snapshot("demo-tests", "Add keyboard shortcuts", 44_600, 230_000, "Fast model", .idle),
                        snapshot("demo-docs", "Update the setup guide", 23_700, 120_000, "Main model", .completed)]
-        model.track(.pinned("demo-root"))
+        model.trackingMode = .codex
+        model.selection = TaskSelection(threadID: "demo-root", provenance: .exact)
         model.connectionIssue = nil
+        model.localDiscoveryIssue = nil
+        model.settings.approvedExecutable = ApprovedExecutable(path: "/tmp/demo-codex", identity: "synthetic", version: "0.200.1")
         model.agentDiscovery = AgentDiscoverySnapshot(rootID: "demo-root", tasks: [
             snapshot("demo-ui", "Interface review", 45_800, 320_000, "Main model"),
             snapshot("demo-access", "Accessibility checks", 33_200, 190_000, "Fast model"),
@@ -56,19 +59,38 @@ struct ScreenshotRenderer {
         model.back()
         if name == "agents" { model.openAgents() }
         if name == "history" { model.openHistory() }
+        if name == "local-only" { model.tasks[0].task.title = "Session a1b2c3d4 · 9/11/26, 9:41 AM" }
+        if ["local-only", "empty", "access"].contains(name) {
+            model.settings.approvedExecutable = nil
+            model.connectionIssue = .unapprovedExecutable
+            model.account = AccountUsageSnapshot(quotas: .unavailable(.noData), dailyTokens: .unavailable(.noData))
+            model.agentDiscovery = AgentDiscoverySnapshot(rootID: "demo-root", tasks: [], exhaustive: false)
+        }
+        if ["empty", "access"].contains(name) {
+            model.tasks = []; model.selection = TaskSelection(threadID: nil, provenance: .inferred(.noData))
+            model.localDiscoveryIssue = name == "empty" ? .noData : .permissionDenied
+        }
+        if name == "update" {
+            model.connectionIssue = .executableChanged
+            model.account.quotas = model.account.quotas.markedStale()
+        }
+        if name == "selection" { model.track(.codex); model.selection = TaskSelection(threadID: nil, provenance: .inferred(.unsupportedSchema)) }
+        if name == "settings" { model.openSettings() }
+        let height = name == "settings" ? 580 : 380
+        let pixelHeight = height * 3
         let host = NSHostingView(rootView: PanelRootView(model: model).environment(\.colorScheme, .dark)
             .environment(\.displayScale, 3)
-            .frame(width: 300, height: 380)
+            .frame(width: 300, height: CGFloat(height))
             .scaleEffect(3)
-            .frame(width: 900, height: 1140))
+            .frame(width: 900, height: CGFloat(pixelHeight)))
         host.sizingOptions = []
-        host.frame = NSRect(x: 0, y: 0, width: 900, height: 1140)
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: CGFloat(pixelHeight))
         let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.isOpaque = false; window.backgroundColor = .clear
         window.contentView = host
-        window.setContentSize(NSSize(width: 900, height: 1140))
-        host.frame = NSRect(x: 0, y: 0, width: 900, height: 1140)
+        window.setContentSize(NSSize(width: 900, height: CGFloat(pixelHeight)))
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: CGFloat(pixelHeight))
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         // SwiftUI caches text in sublayers at 1x in an offscreen window.
@@ -84,7 +106,7 @@ struct ScreenshotRenderer {
             layer.sublayers?.forEach(renderAtExportScale)
         }
         if let layer = host.layer { renderAtExportScale(layer) }
-        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 900, pixelsHigh: 1140,
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 900, pixelsHigh: pixelHeight,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("No bitmap") }
         bitmap.size = host.bounds.size

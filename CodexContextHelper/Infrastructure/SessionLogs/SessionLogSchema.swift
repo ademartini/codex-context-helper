@@ -2,7 +2,17 @@ import Foundation
 
 /// A numeric-only projection: unknown payload keys are never hydrated into application objects.
 enum SessionLogSchema {
-    static let version = "session-0.153.4-v1"
+    static let version = "session-counters-v2"
+    static func isValidIdentity(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 256 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95
+        }
+    }
+    static func isValidProducerVersion(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 128 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [43, 45, 46, 95].contains($0)
+        }
+    }
     // The required four /status oracle comparisons are not yet available. Never infer this from a setting.
     static let occupancyVerified = false
 
@@ -45,10 +55,17 @@ enum SessionLogSchema {
             let payload = try root.nestedContainer(keyedBy: Payload.self, forKey: .payload)
             switch type {
             case "session_meta":
-                record = .metadata(id: try payload.decode(String.self, forKey: .id), version: try payload.decode(String.self, forKey: .cli_version),
-                                   agentName: try payload.decodeIfPresent(String.self, forKey: .agent_nickname).map { String($0.prefix(256)) },
-                                   parentID: try payload.decodeIfPresent(String.self, forKey: .parent_thread_id),
-                                   forkID: try payload.decodeIfPresent(String.self, forKey: .forked_from_id))
+                do {
+                    let id = try payload.decode(String.self, forKey: .id)
+                    let version = try payload.decode(String.self, forKey: .cli_version)
+                    let parentID = try payload.decodeIfPresent(String.self, forKey: .parent_thread_id)
+                    let forkID = try payload.decodeIfPresent(String.self, forKey: .forked_from_id)
+                    guard isValidIdentity(id), isValidProducerVersion(version),
+                          parentID.map(isValidIdentity) ?? true, forkID.map(isValidIdentity) ?? true else { throw SchemaError.invalid }
+                    record = .metadata(id: id, version: version,
+                                       agentName: try payload.decodeIfPresent(String.self, forKey: .agent_nickname).map { String($0.prefix(256)) },
+                                       parentID: parentID, forkID: forkID)
+                } catch { throw SchemaError.invalidMetadata }
             case "turn_context": record = .model(try payload.decode(String.self, forKey: .model))
             default:
                 guard try payload.decode(String.self, forKey: .type) == "token_count" else { record = .ignored; return }
@@ -68,6 +85,6 @@ enum SessionLogSchema {
             }
         }
     }
-    enum SchemaError: Error { case invalid }
+    enum SchemaError: Error { case invalid, invalidMetadata }
     static func decode(_ data: Data) throws -> Record { try JSONDecoder().decode(Envelope.self, from: data).record }
 }
