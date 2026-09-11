@@ -10,7 +10,7 @@ Include the affected revision, a short impact description, and reproduction step
 
 ## Trust boundary
 
-The helper runs outside App Sandbox to inspect local Codex session files and launch the user-approved Codex executable. Optional Accessibility permission is powerful system access; grant it only to a build you trust. The helper uses it to read task-selection metadata from Codex.
+The helper runs outside App Sandbox to inspect local Codex session files and launch the user-approved Codex executable. It reads task-selection metadata from local Codex desktop diagnostic logs and does not require Accessibility permission. Run only a build you trust.
 
 The app sends allowlisted read requests to Codex's app-server. That process uses your existing Codex authentication and may contact account services. It also manages its own local state. The helper does not initiate task execution or billing actions. See [privacy](PRIVACY.md) for what it reads and stores.
 
